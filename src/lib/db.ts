@@ -1,5 +1,5 @@
 // Prisma Client - Database Connection with Pooling and Graceful Shutdown
-// Optimized for production use with SQLite
+// Supports both SQLite (local dev) and PostgreSQL with Prisma Accelerate (production)
 
 import { PrismaClient } from '@prisma/client'
 
@@ -11,17 +11,20 @@ const globalForPrisma = globalThis as unknown as {
 // Store the initial DATABASE_URL when module loads
 const currentDatabaseUrl = process.env.DATABASE_URL
 
+// Detect database type
+const isPostgres = currentDatabaseUrl?.startsWith('postgresql://') || currentDatabaseUrl?.startsWith('postgres://')
+const isAccelerate = currentDatabaseUrl?.startsWith('prisma://')
+const isSQLite = currentDatabaseUrl?.startsWith('file:')
+
 // In development, reset client if DATABASE_URL changed
 if (process.env.NODE_ENV !== 'production') {
   if (globalForPrisma.databaseUrl && globalForPrisma.databaseUrl !== currentDatabaseUrl) {
-    // DATABASE_URL changed, disconnect old client
+    console.log('[DB] DATABASE_URL changed, resetting Prisma client...')
     if (globalForPrisma.prisma) {
       globalForPrisma.prisma.$disconnect().catch(() => {})
     }
     globalForPrisma.prisma = undefined
   }
-  // Don't reset on every load - only reset if DATABASE_URL changed
-  // This ensures the client stays initialized across hot reloads
 }
 
 interface ConnectionMetrics {
@@ -40,11 +43,10 @@ const metrics: ConnectionMetrics = {
 
 /**
  * Get or create Prisma client with optimized configuration
- * For SQLite, we use a singleton pattern with proper timeout settings
+ * Supports SQLite (local) and PostgreSQL with Accelerate (production)
  */
 export const db = (() => {
   // Force reload Prisma Client by clearing the cache
-  // This ensures the regenerated Prisma Client is used
   if (process.env.FORCE_PRISMA_RELOAD === 'true' && globalForPrisma.prisma) {
     console.log('[DB] Force reloading Prisma client...')
     globalForPrisma.prisma = undefined
@@ -54,10 +56,18 @@ export const db = (() => {
     return globalForPrisma.prisma
   }
 
-  // Log the DATABASE_URL for debugging
-  console.log('[DB] Initializing Prisma client with DATABASE_URL:', process.env.DATABASE_URL)
+  // Log database type for debugging
+  if (isAccelerate) {
+    console.log('[DB] 🔥 Connecting to PostgreSQL via Prisma Accelerate (Production)')
+  } else if (isPostgres) {
+    console.log('[DB] 🐘 Connecting to PostgreSQL directly')
+  } else if (isSQLite) {
+    console.log('[DB] 📁 Using SQLite database (Local Development)')
+  } else {
+    console.log('[DB] ⚠️  Unknown database type:', process.env.DATABASE_URL?.substring(0, 30) + '...')
+  }
 
-  // Create new client with optimized settings for SQLite
+  // Create new client with optimized settings
   const prismaClient = new PrismaClient({
     log: process.env.NODE_ENV === 'development' ? ['query', 'error', 'warn'] : ['error', 'warn'],
     datasources: {
@@ -65,15 +75,13 @@ export const db = (() => {
         url: process.env.DATABASE_URL,
       },
     },
-    // SQLite-specific optimizations
-    // Note: SQLite doesn't support connection pooling like PostgreSQL
-    // These settings help with connection management
   })
 
   // Store the DATABASE_URL used for this client
   globalForPrisma.databaseUrl = process.env.DATABASE_URL
   globalForPrisma.prisma = prismaClient
-  console.log('[DB] Prisma client initialized successfully')
+
+  console.log('[DB] ✅ Prisma client initialized successfully')
   return prismaClient
 })()
 
